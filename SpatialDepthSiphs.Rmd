@@ -1,0 +1,280 @@
+---
+title: "Spatial Pattern Analysis of Siphonophore Vertical Habitat Use"
+author: "Alejandro DamianSerrano"
+date: "3/8/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(sp)
+library(spatial)
+library(spatstat)
+library(reshape2)
+library(rmutil)
+library(scatterplot3d)
+library(vegan)
+library(fields)
+library(gstat)
+library(statnet)
+library(car)
+library(stpp)
+library(metafor)
+```
+
+```{r dataload, include=F}
+zdata = read.csv("~/Dropbox/siphonophore_phylogeny_2017/character_coding/Siphonophore_depth_pruned.tsv", sep='\t')
+zdata[,-1] = lapply(zdata[,-1],as.numeric)
+rownames(zdata) = zdata$Species
+
+funnel(zdata$Median-mean(zdata$Median), sei=zdata$StdDev/sqrt(zdata$Count))
+funnel(zdata$Median-mean(zdata$Median), vi=1000000/sqrt(zdata$Count))
+```
+
+##Goal:
+
+Simulate and compare 3D spatial distribution patterns of different siphonophore species and other zooplankton (potential prey) from ROV annotations' bathymetric summary statistics and patchiness metrics.
+
+Calculate distance distributions between different planktonic taxa.
+
+Calculate relative encounter probabilities for each pair of siphonophore-prey species.
+
+Estimate an expected dietary covariance matrix for siphonophore species pairs given their distributions relative to prey
+
+## Siphonophore Bathymetric Profile Similarity
+
+Loaded ROV depth data including `{r} colnames(zdata)`
+Transform variables to numeric. Make rownames = Species names.
+
+```{r explore, echo=F}
+#map(zdata[,-1], hist)
+heatmap(as.matrix(zdata[,c(-1,-5)]))
+```
+
+##Simulated Normal Distribution
+
+Generate normal distributions of vertical depth data from the real mean and standard deviation, with an N equivalent to the real abundance counts. Produced a list of simulated observations of different species in different depths.
+
+```{r simulate, include=T, warning=FALSE, message=FALSE}
+znorm  = list()
+for(i in 1:nrow(zdata)){
+  print(zdata$Species[i])
+  #print(rnorm(zdata$Count[i], zdata$Mean[i], zdata$StdDev[i]))
+  zi = rnorm(zdata$Count[i], zdata$Mean[i], zdata$StdDev[i])
+  znorm[[i]] = zi[which(zi>zdata$Min[i], zi<zdata$Max[i])]
+}
+znormX=rep(0,max(zdata$Count))
+for(i in 1:length(znorm)){
+  zni = c(znorm[[i]],rep(NA, (max(zdata$Count) - length(znorm[i]))))
+  znormX = rbind(znormX,zni)
+}
+dim(znormX)
+znorm_data = melt(cbind(zdata$Species,data.frame(znormX[-1,1:250])))
+znorm_data = znorm_data[,-2]
+names(znorm_data) = c("Species","Depth")
+```
+
+Barplot and boxplot from ggplot2 help visualize the data simulated.
+
+```{r plots, echo=T}
+znorm_data$Depth = -1*znorm_data$Depth
+p <- ggplot(znorm_data, aes(y=Depth,x=Species)) + geom_boxplot()
+p + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+p2 <- ggplot(znorm_data, aes(x=Depth,fill=Species),xlim=1) + geom_histogram(binwidth = 20, alpha=.4)
+p2
+```
+
+##Spatial XYZ Simulations
+
+*How do we estimate predator-prey encounter rates?*
+
+Encounter rate: E = B(encounter rate kernel) C1(predator density) C2(prey density)
+B = 3/2 pi L(Predator colony length) (Prey length)
+
+Next chunk:
+  Random generation of X-Y values in an arbitrary reference system in meters, ascribed to each Z-Species observation. Product: List of dataframes for each species with XYZ data.
+  Plotted 3D ocean space with clouds of distributed siphonophore species.
+  By Species Distance List: List of dataframes for each species with Euclidean distances between observations of the same species.
+
+```{r spatsim3d, fig.height=18, fig.width=18, echo=T}
+
+X = runif(nrow(znorm_data), max=1000)
+Y = runif(nrow(znorm_data), max=1000)
+xyzdata = cbind(znorm_data, X, Y)[,c(1,3,4,2)]
+xyzdata$Depth = xyzdata$Depth*-1
+s3d <- with(xyzdata, scatterplot3d(X, Y, Depth, color = as.numeric(Species), pch = 19))
+legend(s3d$xyz.convert(0.5, 0.7, 0.5), pch = 19, yjust=0, legend = levels(xyzdata$Species), col = colors()[400:429])
+split(x=xyzdata[which(!is.na(xyzdata$Depth)),], f=xyzdata[which(!is.na(xyzdata$Depth)),]$Species) -> byspp_xyz
+lapply(byspp_xyz, function(x) { x["Species"] <- NULL; x }) %>% lapply(vegdist, method="euclidean") %>% lapply(as.matrix) -> byspp_dists
+xyz_noNA = xyzdata[which(!is.na(xyzdata$Depth)),]
+```
+
+Plotted X(artbitrary horizontal component)-Z(depth) plots with combinations of species.
+
+```{r spatsim2d, fig.height=18, fig.width=18, echo=F}
+xzdata = xyz_noNA[,c(1,2,4)]
+
+plot(xzdata[which(xzdata$Species == 'Nanomia bijuga'),-1], col='red', cex=3, pch='N', ylim=c(2000,0))
+points(xzdata[which(xzdata$Species == 'Praya dubia'),-1], col='blue', , cex=3, pch='P')
+points(xzdata[which(xzdata$Species == 'Marrus claudanielis'),-1], col='orange', cex=3, pch='M')
+points(xzdata[which(xzdata$Species == 'Kephyes ovata'),-1], col='green', , cex=3, pch='K')
+
+#lapply(byspp_dists, heatmap) -> heatmapsX
+#vegdist(xyzdata[which(!is.na(xyzdata$Depth)),2:4], method="euclidean") %>% as.matrix %>% heatmap
+```
+
+##Spatial Analysis in 2D
+
+Generate PPP objects using sp package.
+Calculate spatial sumary statistics: Spherical contact
+
+Take a 500 points sample of the large XYZ matrix, calculate euclidean pairwise distances between species (from the set of points that belong to each species using a unique identifier loop), plot heatmap.
+
+```{r spat_analysis2D, fig.height=18, fig.width=18, echo=T}
+xz_S = SpatialPointsDataFrame(coords=xzdata[-1],data=xzdata[1], match.ID=T)
+as.ppp(xzdata[-1], c(-5000,5000,-5000,5000)) %>% Hest() -> sphcont
+sphcont$hazard
+
+xyz_noNA  -> xyzSample #%>% sample_n(1000)
+xyzSample[-1] %>% vegdist(method="euclidean") %>% as.matrix -> xyzDistSample
+rownames(xyzDistSample) = colnames(xyzDistSample) = xyzSample$Species
+
+SpeciesPairWise <- function(dists){
+  Species = unique(rownames(dists))
+  Iterations = 1:length(unique(rownames(dists)))
+  PairwiseDistances = matrix(nrow=length(Iterations), ncol = length(Iterations))
+  for(i in Iterations){
+   sp1=Species[i]
+   for(j in Iterations){
+     sp2=Species[j]
+     PairwiseDistances[i,j] = mean(dists[which(rownames(dists) == sp1),which(colnames(dists) == sp2)])
+  }}
+  return(as.matrix(PairwiseDistances))
+  }
+
+xyzPWSample = SpeciesPairWise(xyzDistSample) #Pairwise distances between species, 3D sample
+rownames(xyzPWSample) = colnames(xyzPWSample) = unique(rownames(xyzDistSample))
+PairwisePxyz = 1 - xyzPWSample/max(xyzPWSample)
+#PairwisePxyz %>% heatmap()
+
+xzSample = xyzSample[,-3] #same as above but with a 2D sample
+xzSample[-1] %>% vegdist(method="euclidean") %>% as.matrix -> xzDistSample
+rownames(xzDistSample) = colnames(xzDistSample) = xzSample$Species
+xzPWSample = SpeciesPairWise(xzDistSample)
+rownames(xzPWSample) = colnames(xzPWSample) = unique(rownames(xzDistSample))
+PairwisePxz = 1 - xzPWSample/max(xzPWSample)
+
+zSample = xyzSample[,c(-2,-3)] #same as above but with a 1D sample (only Depth)
+zSample[-1] %>% vegdist(method="euclidean") %>% as.matrix -> zDistSample
+rownames(zDistSample) = colnames(zDistSample) = zSample$Species
+zPWSample = SpeciesPairWise(zDistSample)
+rownames(zPWSample) = colnames(zPWSample) = unique(rownames(zDistSample))
+PairwisePz = 1 - zPWSample/max(zPWSample)
+
+#Lets test whether adding random X and Y dimensions adds any information
+mantel(PairwisePxyz, PairwisePxz)
+mantel(PairwisePxz, PairwisePz)
+mantel(PairwisePxyz, PairwisePz)
+
+#and the winner is... they all have the exact same signal!
+#So, we stick with the simplest solution: zDist
+
+melt(zDistSample) -> zDistSampleMelt
+colnames(zDistSampleMelt) = c("SP1", "SP2", "Dist")
+
+zDistSampleMelt[which(zDistSampleMelt$Dist < 0.001 & zDistSampleMelt$Dist > 0 & zDistSampleMelt$SP1 != zDistSampleMelt$SP2), ] # %>% .[which((.$SP1 %in% Predators & .$SP2 %in% Prey)|(.$SP1 %in% Prey & .$SP2 %in% Predators)), ]
+```
+##Pairwise Correlation function (Rippley's K)
+```{r K_analysis2D, fig.height=18, fig.width=18, echo=T}
+xzSample[1:2000,2:3] %>% as.ppp(owin(c(min(xzSample[2]),max(xzSample[2])), c(min(xzSample[3]),max(xzSample[3])))) -> xzPPP
+xzPPP %>% pcf() -> xzPCF
+xzPPP %>% Kest() -> xzKest
+#plot(envelope(xzPPP,pcf))
+#plot(envelope(xzPPP,Kest))
+marks(xzPPP) <- xzSample[1:2000,1]
+plot(Smooth(xzPPP))
+cut.ppp(xzPPP) -> xzMPPP
+Gdot(xzPPP, i="Nanomia bijuga") %>% plot()
+Kcross(xzPPP, i="Nanomia bijuga", j="Praya dubia", r=c(0,1000))
+KcrossData = c("SP1", "SP2", "ISO", "TRANS")
+for(i in xzPPP$marks[1:30]){
+  print(i)
+  for(j in xzPPP$marks[1:30]){
+    if(i!=j){
+      A = Kcross(xzPPP, i,j, r=c(0,1000))
+      class(A) = "data.frame"
+      B = c(i,j,mean(A$iso),mean(A$trans))
+      KcrossData = rbind(KcrossData,B)
+    }
+  }
+}
+colnames(KcrossData) = KcrossData[1,]
+KcrossData = as.data.frame(KcrossData[-1,])
+rownames(KcrossData) = 1:nrow(KcrossData)
+KcrossData = mutate(KcrossData, paste(KcrossData$SP1,KcrossData$SP2))
+names(KcrossData)[5] = "SPP"
+plot = ggplot(KcrossData) + geom_point(aes(x=ISO, y=TRANS, color=SPP)) + scale_color_discrete(guide = FALSE)
+
+split.ppp(xzPPP) -> split_xzPPP
+split_xzPPP$`Apolemia lanosa`$y %>% summary()
+```
+
+
+##Simulate patchy distributions
+```{r cluster, fig.height=18, fig.width=18, echo=F}
+xyzSampleList = split(xyzSample, xyzSample$Species)
+xyzSampleClust = xyzSampleList
+for(i in 1:length(xyzSampleList)){
+  rMatClust(.01, runif(1,3,20), 100, win=owin(c(0,100),c(0,100))) %>% as.data.frame() -> XYi
+  xyzSampleClust[[i]][1:nrow(xyzSampleList[[i]]),c(2,3)] = XYi
+}
+xyzSampleClust <- do.call(rbind, xyzSampleClust)
+rownames(xyzSampleClust) = 1:nrow(xyzSampleClust)
+#ggplot(xyzSampleClust[1:1000,], aes(x=X,y=-Depth,color=Species)) + geom_point()
+s3d <- with(xyzSampleClust, scatterplot3d(X, Y, -Depth, color = as.numeric(Species), pch = 19))
+legend(s3d$xyz.convert(0.5, 0.7, 0.5), pch = 19, yjust=0, legend = levels(xyzSampleClust$Species), col = colors()[400:429])
+
+xyzSampleClust[,-1] %>% vegdist(method="euclidean") %>% as.matrix -> xyzClustDist
+rownames(xyzClustDist) = colnames(xyzClustDist) = xyzSampleClust$Species
+
+xyzPWClust = SpeciesPairWise(xyzClustDist) #Pairwise distances between species, 3D sample
+rownames(xyzPWClust) = colnames(xyzPWClust) = unique(rownames(xyzClustDist))
+PairwisePClustxyz = 1 - xyzPWClust/max(xyzPWClust)
+
+mantel(PairwisePxyz, PairwisePClustxyz)
+mantel(PairwisePClustxyz, PairwisePz)
+
+```
+
+##Depth Bins Analysis
+```{r bins}
+xyzSplit100 = split(xyzSample, cut(xyzSample$Depth, seq(0, max(xyzSample$Depth),100)))  
+names(xyzSplit100) = paste(seq(0, max(xyzSample$Depth)-100, 100), seq(100, max(xyzSample$Depth), 100), sep=" - ")
+
+xyzDistSplit100 = list()
+ind = 0
+for(E in xyzSplit100){
+  ind = ind+1
+  bin = as.matrix(dist(E[,-1]))
+  rownames(bin) = colnames(bin) = E$Species
+  xyzDistSplit100[[ind]] = SpeciesPairWise(bin)
+  rownames(xyzDistSplit100[[ind]]) = colnames(xyzDistSplit100[[ind]]) = unique(rownames(bin))
+  print(xyzDistSplit100[[ind]])
+  }
+
+```
+
+
+**To do list:**
+-Obtain prey distribution profiles
+-Obtain raw Z depth data for siphonophores
+-Obtain patchiness metrics from ROV transect data
+-Calculate other spatial summary statistics per pair of species
+  Rippley's K, Pairwise Correlation Function
+
+
+
+
