@@ -11,7 +11,7 @@ library(statnet)
 library(spatstat)
 library(sp)
 
-zdata = read.csv("~/Dropbox/siphonophore_phylogeny_2017/character_coding/Siphonophore_depth_pruned.tsv", sep='\t')
+zdata = read.csv("Siphonophore_depth_pruned.tsv", sep='\t')
 zdata[,-1] = lapply(zdata[,-1],as.numeric)
 rownames(zdata) = zdata$Species
 
