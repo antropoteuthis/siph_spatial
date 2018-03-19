@@ -1,1 +1,3 @@
 # siph_spatial
+
+The pipeline uses real positions in Z (depth), relative abundances, and patchiness (degree of spatial aggregation, when available from transects) from the VARS data, and generates random X and Y components over thousands of iterations. In each iteration, my pipeline will record the relative frequencies of 2 point objects being within threshold (i.e. 1m) distance for each siphonophore-prey taxon couple. The output would be a relative encounter rate matrix for each siphonophore species (rows) and prey taxon (columns) in a scale from 0 to 1. Adjustments on the threshold distance can be made for different siphonophore and prey species, accounting for siphonophore colony length, tentacle length, prey motility, and prey size.
